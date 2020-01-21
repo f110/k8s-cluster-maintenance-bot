@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/update-repository.iml" filepath="$PROJECT_DIR$/.idea/update-repository.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/k8s-cluster-maintenance-bot.iml" filepath="$PROJECT_DIR$/.idea/k8s-cluster-maintenance-bot.iml" />
     </modules>
   </component>
 </project>
