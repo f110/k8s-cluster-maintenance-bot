@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,11 @@ const (
 	authorName  = "bot"
 	authorEmail = "fmhrit+bot@gmail.com"
 )
+
+type dockerInspect struct {
+	RepoTags    []string `json:"RepoTags"`
+	RepoDigests []string `json:"RepoDigests"`
+}
 
 func switchBranch(repo *git.Repository) (string, *git.Worktree, error) {
 	branchName := fmt.Sprintf("update-kustomization-%d", time.Now().Unix())
@@ -112,10 +118,11 @@ func updateKustomization() error {
 	inputFile := ""
 	imageName := ""
 	newTag := ""
+	inspectFile := ""
 	flag.StringVar(&repositoryRoot, "root", repositoryRoot, "git repository root")
 	flag.StringVar(&inputFile, "input", inputFile, "kustomization.yaml path (relative path from repo root)")
 	flag.StringVar(&imageName, "image-name", imageName, "Image name")
-	flag.StringVar(&newTag, "image-tag", newTag, "New image tag")
+	flag.StringVar(&inspectFile, "inspect", inspectFile, "a file which contain an output of docker inspect")
 	flag.Parse()
 
 	if os.Getenv("GITHUB_TOKEN") == "" {
@@ -124,6 +131,22 @@ func updateKustomization() error {
 	if os.Getenv("GITHUB_REPO") == "" || !strings.Contains(os.Getenv("GITHUB_REPO"), "/") {
 		return errors.New("not provided github repository name (e.g. octocat/example)")
 	}
+
+	inspectBuf, err := ioutil.ReadFile(inspectFile)
+	if err != nil {
+		return err
+	}
+	inspect := make([]*dockerInspect, 0)
+	if err := json.Unmarshal(inspectBuf, &inspect); err != nil {
+		return err
+	}
+	if len(inspect) == 0 {
+		return errors.New("could not get a container info from inspect file")
+	}
+	if len(inspect[0].RepoDigests) == 0 {
+		return errors.New("not found an image digest. probably not push yet")
+	}
+	newTag = inspect[0].RepoDigests[0]
 
 	repo, err := git.PlainOpen(filepath.Join(repositoryRoot))
 	if err != nil {
