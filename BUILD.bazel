@@ -35,7 +35,7 @@ container_push(
 go_library(
     name = "go_default_library",
     srcs = ["main.go"],
-    importpath = "github.com/f110/update-manifests",
+    importpath = "github.com/f110/update-repository",
     visibility = ["//visibility:private"],
     deps = ["@in_gopkg_yaml_v2//:go_default_library"],
 )
