@@ -1,0 +1,47 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+load("@bazel_gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix github.com/f110/update-repository
+gazelle(name = "gazelle")
+
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
+load("@io_bazel_rules_docker//container:container.bzl", "container_image", "container_push")
+
+pkg_tar(
+    name = "bin",
+    srcs = [
+        ":update-repository",
+    ],
+    mode = "0755",
+    package_dir = "/usr/local/bin",
+)
+
+container_image(
+    name = "image",
+    base = "@com_google_distroless_base//image",
+    entrypoint = ["/usr/local/bin/update-repository"],
+    tars = [":bin"],
+)
+
+container_push(
+    name = "push",
+    format = "Docker",
+    image = ":image",
+    registry = "docker.pkg.github.com",
+    repository = "f110/update-repository",
+    tag = "latest",
+)
+
+go_library(
+    name = "go_default_library",
+    srcs = ["main.go"],
+    importpath = "github.com/f110/update-manifests",
+    visibility = ["//visibility:private"],
+    deps = ["@in_gopkg_yaml_v2//:go_default_library"],
+)
+
+go_binary(
+    name = "update-repository",
+    embed = [":go_default_library"],
+    visibility = ["//visibility:public"],
+)

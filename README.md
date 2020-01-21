@@ -1,1 +1,1 @@
-# update-manifests
+# update-repository

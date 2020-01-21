@@ -1,0 +1,3 @@
+images:
+- name: quay.io/f110/discord-bot
+  newTag: sha256:test
