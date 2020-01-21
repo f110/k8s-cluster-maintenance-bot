@@ -42,7 +42,9 @@ func switchBranch(repo *git.Repository) (string, *git.Worktree, error) {
 	}
 
 	ref := plumbing.NewHashReference(plumbing.ReferenceName(fmt.Sprintf("refs/heads/%s", branchName)), masterRef.Hash())
-	repo.Storer.SetReference(ref)
+	if err := repo.Storer.SetReference(ref); err != nil {
+		return "", nil, err
+	}
 
 	tree, err := repo.Worktree()
 	if err != nil {
