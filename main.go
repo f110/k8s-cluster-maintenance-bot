@@ -10,15 +10,6 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-type kustomization struct {
-	Images []*image `yaml:"images"`
-}
-
-type image struct {
-	Name   string `yaml:"name"`
-	NewTag string `yaml:"newTag"`
-}
-
 func updateRepository() error {
 	inputFile := ""
 	imageName := ""
@@ -36,16 +27,23 @@ func updateRepository() error {
 		return errors.New("file is empty")
 	}
 
-	k := &kustomization{}
+	k := make(map[string]interface{})
 	if err := yaml.Unmarshal(b, k); err != nil {
 		return err
 	}
 
 	changed := false
-	for _, v := range k.Images {
-		if v.Name == imageName {
-			v.NewTag = newTag
-			changed = true
+	if v, ok := k["images"]; ok {
+		value := v.([]interface{})
+		for _, i := range value {
+			image := i.(map[interface{}]interface{})
+			if n, ok := image["name"]; ok {
+				name := n.(string)
+				if name == imageName {
+					image["newTag"] = newTag
+					changed = true
+				}
+			}
 		}
 	}
 
