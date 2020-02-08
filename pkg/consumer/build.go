@@ -20,7 +20,7 @@ import (
 
 const (
 	builderServiceAccount  = "build"
-	buildSidecarImage      = "registry.f110.dev/k8s-cluster-maintenance-bot/build-sidecar"
+	buildSidecarImage      = "registry.f110.dev/k8s-cluster-maintenance-bot/sidecar"
 	bazelImage             = "l.gcr.io/google/bazel:2.0.0"
 	artifactHost           = "storage-hl.svc.default.svc.cluster.local:9000"
 	artifactBucket         = "build-artifacts"
@@ -35,7 +35,7 @@ docker load -i {{ .ArtifactPath }}
 docker images
 `
 
-var letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+var letters = "abcdefghijklmnopqrstuvwxyz1234567890"
 
 type BazelBuild struct {
 	Rule *config.Rule
