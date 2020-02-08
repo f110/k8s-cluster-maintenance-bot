@@ -17,9 +17,11 @@ import (
 func producer(args []string) error {
 	confFile := ""
 	buildRuleFile := ""
+	debug := false
 	fs := pflag.NewFlagSet("maintenance-bot", pflag.ContinueOnError)
 	fs.StringVarP(&confFile, "conf", "c", confFile, "Config file")
 	fs.StringVar(&buildRuleFile, "build-rule", buildRuleFile, "Build rule")
+	fs.BoolVarP(&debug, "debug", "D", debug, "Debug")
 	if err := fs.Parse(args); err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
@@ -37,7 +39,7 @@ func producer(args []string) error {
 	webhookListener := webhook.NewWebhookListener(conf.WebhookListener)
 
 	for _, r := range buildRule.Rules {
-		builder := consumer.NewBuildConsumer(r)
+		builder := consumer.NewBuildConsumer(conf.BuildNamespace, r, conf.GitHubToken, debug)
 		s := strings.SplitN(r.Repo, "/", 2)
 		if strings.HasSuffix(s[1], ".git") {
 			s[1] = strings.TrimSuffix(s[1], ".git")

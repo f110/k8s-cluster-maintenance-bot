@@ -11,6 +11,9 @@ import (
 type Config struct {
 	WebhookListener string `json:"webhook_listener"`
 	BuildNamespace  string `json:"build_namespace"`
+	GitHubTokenFile string `json:"github_token_file"`
+
+	GitHubToken string `json:"-"`
 }
 
 func ReadConfig(p string) (*Config, error) {
@@ -28,6 +31,13 @@ func ReadConfig(p string) (*Config, error) {
 	}
 	if conf.BuildNamespace == "" {
 		return nil, xerrors.New("config: build namespace is mandatory")
+	}
+	if conf.GitHubTokenFile != "" {
+		b, err := ioutil.ReadFile(conf.GitHubTokenFile)
+		if err != nil {
+			return nil, xerrors.Errorf(": %v", err)
+		}
+		conf.GitHubToken = string(b)
 	}
 
 	return conf, nil
@@ -47,8 +57,9 @@ type Rule struct {
 }
 
 type PostProcess struct {
-	Type     string `json:"type"`
-	ImageTag string `json:"image_tag"`
+	Repo  string   `json:"repo"`
+	Image string   `json:"image"`
+	Paths []string `json:"paths"`
 }
 
 func ReadBuildRule(p string) (*BuildRule, error) {

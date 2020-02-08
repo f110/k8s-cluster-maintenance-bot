@@ -29,7 +29,8 @@ container_push(
     image = ":image",
     registry = "registry.f110.dev",
     repository = "k8s-cluster-maintenance-bot/bot",
-    tag = "latest",
+    tag = "{BUILD_TIMESTAMP}",
+    stamp = True,
 )
 
 pkg_tar(

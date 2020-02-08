@@ -1,12 +1,34 @@
 package consumer
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/google/go-github/v29/github"
+	"golang.org/x/oauth2"
 	"golang.org/x/xerrors"
+	"gopkg.in/src-d/go-git.v4"
+	gitConfig "gopkg.in/src-d/go-git.v4/config"
+	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
+	goyaml "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -20,28 +42,37 @@ const (
 	builderServiceAccount  = "build"
 	buildSidecarImage      = "registry.f110.dev/k8s-cluster-maintenance-bot/sidecar"
 	bazelImage             = "l.gcr.io/google/bazel:2.0.0"
-	artifactHost           = "storage-hl.svc.default.svc.cluster.local:9000"
+	artifactHost           = "storage-hl-svc.default.svc.cluster.local:9000"
 	artifactBucket         = "build-artifacts"
 	storageTokenSecretName = "storage-token"
 
 	labelKeyJobId = "k8s-cluster-maintenance-bot.f110.dev/job-id"
+
+	authorName  = "bot"
+	authorEmail = "fmhrit+bot@gmail.com"
+)
+
+var (
+	errBuildFailure = xerrors.New("build failed")
 )
 
 var letters = "abcdefghijklmnopqrstuvwxyz1234567890"
 
 type BazelBuild struct {
-	Namespace string
-	Rule      *config.Rule
+	Namespace   string
+	Rule        *config.Rule
+	GithubToken string
 
 	url        string
 	workingDir string
+	debug      bool
 }
 
 func errorLog(err error) {
 	fmt.Fprintf(os.Stderr, "%+v\n", err)
 }
 
-func NewBuildConsumer(namespace string, rule *config.Rule) *BazelBuild {
+func NewBuildConsumer(namespace string, rule *config.Rule, githubToken string, debug bool) *BazelBuild {
 	var u string
 	if rule.Private {
 		u = fmt.Sprintf("git@github.com:%s.git", rule.Repo)
@@ -49,7 +80,7 @@ func NewBuildConsumer(namespace string, rule *config.Rule) *BazelBuild {
 		u = fmt.Sprintf("https://github.com/%s.git", rule.Repo)
 	}
 
-	return &BazelBuild{Namespace: namespace, Rule: rule, url: u}
+	return &BazelBuild{Namespace: namespace, Rule: rule, GithubToken: githubToken, debug: debug, url: u}
 }
 
 func (b *BazelBuild) Build(_ interface{}) {
@@ -65,18 +96,32 @@ func (b *BazelBuild) Build(_ interface{}) {
 	}
 
 	buildId := newBuildId()
-	if err := b.buildRepository(client, buildId); err != nil {
+	defer func() {
+		if err := b.cleanup(client, buildId); err != nil {
+			errorLog(err)
+			return
+		}
+	}()
+
+	err = b.buildRepository(client, buildId)
+	if err != nil && err != errBuildFailure {
 		errorLog(err)
 		return
 	}
 
-	if err := b.cleanup(client, buildId); err != nil {
-		errorLog(err)
-		return
+	if b.Rule.PostProcess != nil {
+		if err := b.postProcess(buildId); err != nil {
+			errorLog(err)
+			return
+		}
 	}
 }
 
 func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error {
+	if b.debug {
+		return nil
+	}
+
 	podList, err := client.CoreV1().Pods(b.Namespace).List(metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s", labelKeyJobId, buildId),
 	})
@@ -108,6 +153,7 @@ func (b *BazelBuild) buildRepository(client *kubernetes.Clientset, buildId strin
 	}
 	defer watchCh.Stop()
 
+	failed := false
 Watch:
 	for e := range watchCh.ResultChan() {
 		switch e.Type {
@@ -116,15 +162,97 @@ Watch:
 			if !ok {
 				continue
 			}
-			if pod.Status.Phase != corev1.PodSucceeded {
-				continue
+			switch pod.Status.Phase {
+			case corev1.PodSucceeded:
+				break Watch
+			case corev1.PodFailed:
+				failed = true
+				break Watch
 			}
-
-			break Watch
 		}
 	}
 
+	if failed {
+		return errBuildFailure
+	}
+
 	return nil
+}
+
+func (b *BazelBuild) postProcess(buildId string) error {
+	artifactDir, err := b.downloadArtifact(b.Rule.Name, buildId)
+	if artifactDir != "" {
+		defer os.RemoveAll(artifactDir)
+	}
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+
+	s := strings.SplitN(b.Rule.PostProcess.Repo, "/", 2)
+	r, err := newGitRepo(b.GithubToken, s[0], s[1], b.Rule.PostProcess.Image)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+	defer r.Close()
+
+	artifactPath := filepath.Join(artifactDir, filepath.Base(b.Rule.Artifacts[0]))
+	if err := r.UpdateKustomization(b.Rule.Name, artifactPath, b.Rule.PostProcess.Paths); err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+
+	return nil
+}
+
+func (b *BazelBuild) downloadArtifact(buildName, buildId string) (string, error) {
+	cfg := &aws.Config{
+		Endpoint:         aws.String(artifactHost),
+		Region:           aws.String("us-east-1"),
+		DisableSSL:       aws.Bool(true),
+		S3ForcePathStyle: aws.Bool(true),
+		Credentials:      credentials.NewEnvCredentials(),
+	}
+	sess := session.Must(session.NewSession(cfg))
+	s3Client := s3manager.NewDownloaderWithClient(s3.New(sess))
+
+	tmpFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		return "", xerrors.Errorf(": %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	_, err = s3Client.Download(tmpFile, &s3.GetObjectInput{
+		Bucket: aws.String(artifactBucket),
+		Key:    aws.String(fmt.Sprintf("%s-%s.tar", buildName, buildId)),
+	})
+	if err != nil {
+		return "", xerrors.Errorf(": %v", err)
+	}
+
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		return "", xerrors.Errorf(": %v", err)
+	}
+
+	tmpFile.Seek(0, 0)
+	t := tar.NewReader(tmpFile)
+	for {
+		hdr, err := t.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", xerrors.Errorf(": %v", err)
+		}
+		f, err := os.Create(filepath.Join(dir, hdr.Name))
+		if err != nil {
+			return "", xerrors.Errorf(": %v", err)
+		}
+		if _, err := io.Copy(f, t); err != nil {
+			return "", xerrors.Errorf(": %v", err)
+		}
+	}
+
+	return dir, nil
 }
 
 func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
@@ -183,6 +311,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 						fmt.Sprintf("--artifact-bucket=%s", artifactBucket),
 						fmt.Sprintf("--artifact-path=%s", b.Rule.Artifacts[0]),
 					},
+					WorkingDir: "/work",
 					Env: []corev1.EnvVar{
 						{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 							FieldRef: &corev1.ObjectFieldSelector{
@@ -254,4 +383,209 @@ func newBuildId() string {
 	}
 
 	return string(buf)
+}
+
+type gitRepo struct {
+	token    string
+	dir      string
+	owner    string
+	repoName string
+	image    string
+
+	repo *git.Repository
+}
+
+func newGitRepo(token string, owner, repo, image string) (*gitRepo, error) {
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		return nil, xerrors.Errorf(": %v", err)
+	}
+
+	u := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	log.Printf("git clone %s", u)
+	r, err := git.PlainClone(dir, false, &git.CloneOptions{
+		URL:   u,
+		Depth: 1,
+		Auth: &http.BasicAuth{
+			Username: "octocat",
+			Password: token,
+		},
+	})
+	if err != nil {
+		return nil, xerrors.Errorf(": %v", err)
+	}
+
+	log.Printf("New git repo: %s/%s in %s with image name: %s", owner, repo, dir, image)
+	return &gitRepo{token: token, dir: dir, owner: owner, repoName: repo, image: image, repo: r}, nil
+}
+
+func (g *gitRepo) switchBranch() (string, *git.Worktree, error) {
+	branchName := fmt.Sprintf("update-kustomization-%d", time.Now().Unix())
+
+	masterRef, err := g.repo.Reference("refs/remotes/origin/master", true)
+	if err != nil {
+		return "", nil, err
+	}
+
+	ref := plumbing.NewHashReference(plumbing.ReferenceName(fmt.Sprintf("refs/heads/%s", branchName)), masterRef.Hash())
+	if err := g.repo.Storer.SetReference(ref); err != nil {
+		return "", nil, err
+	}
+
+	tree, err := g.repo.Worktree()
+	if err != nil {
+		return "", nil, err
+	}
+	if err := tree.Checkout(&git.CheckoutOptions{Branch: ref.Name()}); err != nil {
+		return "", nil, err
+	}
+
+	return branchName, tree, nil
+}
+
+func (g *gitRepo) commit(tree *git.Worktree, path string) error {
+	if _, err := tree.Add(path); err != nil {
+		return err
+	}
+	st, err := tree.Status()
+	if err != nil {
+		return err
+	}
+	if st.IsClean() {
+		return errors.New("changeset is empty")
+	}
+	_, err = tree.Commit(fmt.Sprintf("Update %s", path), &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  authorName,
+			Email: authorEmail,
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (g *gitRepo) push(branchName string) error {
+	refSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", branchName, branchName)
+	return g.repo.Push(&git.PushOptions{
+		Auth: &http.BasicAuth{
+			Username: "octocat",
+			Password: g.token,
+		},
+		RemoteName: "origin",
+		RefSpecs:   []gitConfig.RefSpec{gitConfig.RefSpec(refSpec)},
+	})
+}
+
+func (g *gitRepo) createPullRequest(name, branch string, editedFiles []string) error {
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: g.token},
+	)
+	tc := oauth2.NewClient(ctx, ts)
+
+	client := github.NewClient(tc)
+
+	desc := "Change file(s):\n"
+	for _, v := range editedFiles {
+		desc += v + "\n"
+	}
+	_, _, err := client.PullRequests.Create(context.Background(), g.owner, g.repoName, &github.NewPullRequest{
+		Title: github.String(fmt.Sprintf("Update %s", name)),
+		Body:  github.String(desc),
+		Base:  github.String("master"),
+		Head:  github.String(branch),
+	})
+
+	return err
+}
+
+func (g *gitRepo) UpdateKustomization(name, artifactPath string, paths []string) error {
+	buf, err := ioutil.ReadFile(artifactPath)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+	if !bytes.HasPrefix(buf, []byte("sha256:")) {
+		return xerrors.New("artifact file does not contain an image hash")
+	}
+	newImageHash := strings.TrimSuffix(string(buf), "\n")
+
+	branchName, tree, err := g.switchBranch()
+	if err != nil {
+		return err
+	}
+
+	editFiles := make([]string, 0)
+	for _, in := range paths {
+		absPath := filepath.Join(g.dir, in)
+		log.Printf("Read: %s", absPath)
+		b, err := ioutil.ReadFile(absPath)
+		if err != nil {
+			return err
+		}
+		if len(b) == 0 {
+			return errors.New("file is empty")
+		}
+
+		k := make(map[string]interface{})
+		if err := goyaml.Unmarshal(b, k); err != nil {
+			return err
+		}
+		log.Printf("File body: %v", k)
+
+		changed := false
+		if v, ok := k["images"]; ok {
+			value := v.([]interface{})
+			for _, i := range value {
+				image := i.(map[interface{}]interface{})
+				if n, ok := image["name"]; ok {
+					name := n.(string)
+					log.Printf("Found image: %s", name)
+					if name == g.image {
+						image["digest"] = newImageHash
+						editFiles = append(editFiles, in)
+						changed = true
+					}
+				}
+			}
+		}
+
+		if changed {
+			outBuf, err := goyaml.Marshal(k)
+			if err != nil {
+				return err
+			}
+			log.Printf("Write: %s", absPath)
+			if err := ioutil.WriteFile(absPath, outBuf, 0644); err != nil {
+				return err
+			}
+
+			if err := g.commit(tree, in); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(editFiles) == 0 {
+		log.Print("Skip creating a pull request because not have any change")
+		return nil
+	}
+
+	if err := g.push(branchName); err != nil {
+		return err
+	}
+
+	if err := g.createPullRequest(name, branchName, editFiles); err != nil {
+		return err
+	}
+
+	log.Print("Success create a pull request")
+	return nil
+}
+
+func (g *gitRepo) Close() {
+	os.RemoveAll(g.dir)
 }
