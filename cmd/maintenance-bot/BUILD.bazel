@@ -15,7 +15,7 @@ go_library(
 )
 
 go_binary(
-    name = "producer",
+    name = "maintenance-bot",
     embed = [":go_default_library"],
     visibility = ["//visibility:public"],
 )
