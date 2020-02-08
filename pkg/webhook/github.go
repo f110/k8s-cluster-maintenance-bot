@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/google/go-github/v29/github"
 )
@@ -46,8 +47,11 @@ func (e *eventHandler) Handle(msg interface{}) {
 			return
 		}
 
+		repoName := strings.SplitN(event.Repo.GetFullName(), "/", 2)
+		log.Printf("Push Event: %s/%s", repoName[0], repoName[1])
 		for _, s := range subscribers {
-			if event.Repo.GetOrganization() == s.Owner && event.Repo.GetName() == s.Repo {
+			if repoName[0] == s.Owner && repoName[1] == s.Repo {
+				log.Printf("Trigger subscriber: %s/%s", s.Owner, s.Repo)
 				go s.ConsumeFunc(event)
 			}
 		}

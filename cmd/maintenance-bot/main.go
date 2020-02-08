@@ -17,7 +17,7 @@ import (
 func producer(args []string) error {
 	confFile := ""
 	buildRuleFile := ""
-	fs := pflag.NewFlagSet("producer", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet("maintenance-bot", pflag.ContinueOnError)
 	fs.StringVarP(&confFile, "conf", "c", confFile, "Config file")
 	fs.StringVar(&buildRuleFile, "build-rule", buildRuleFile, "Build rule")
 	if err := fs.Parse(args); err != nil {
@@ -39,6 +39,9 @@ func producer(args []string) error {
 	for _, r := range buildRule.Rules {
 		builder := consumer.NewBuildConsumer(r)
 		s := strings.SplitN(r.Repo, "/", 2)
+		if strings.HasSuffix(s[1], ".git") {
+			s[1] = strings.TrimSuffix(s[1], ".git")
+		}
 		webhookListener.SubscribePushEvent(s[0], s[1], builder.Build)
 	}
 
