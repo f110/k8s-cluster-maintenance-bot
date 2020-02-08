@@ -30,7 +30,8 @@ const (
 var letters = "abcdefghijklmnopqrstuvwxyz1234567890"
 
 type BazelBuild struct {
-	Rule *config.Rule
+	Namespace string
+	Rule      *config.Rule
 
 	url        string
 	workingDir string
@@ -40,7 +41,7 @@ func errorLog(err error) {
 	fmt.Fprintf(os.Stderr, "%+v\n", err)
 }
 
-func NewBuildConsumer(rule *config.Rule) *BazelBuild {
+func NewBuildConsumer(namespace string, rule *config.Rule) *BazelBuild {
 	var u string
 	if rule.Private {
 		u = fmt.Sprintf("git@github.com:%s.git", rule.Repo)
@@ -48,7 +49,7 @@ func NewBuildConsumer(rule *config.Rule) *BazelBuild {
 		u = fmt.Sprintf("https://github.com/%s.git", rule.Repo)
 	}
 
-	return &BazelBuild{Rule: rule, url: u}
+	return &BazelBuild{Namespace: namespace, Rule: rule, url: u}
 }
 
 func (b *BazelBuild) Build(_ interface{}) {
@@ -76,7 +77,7 @@ func (b *BazelBuild) Build(_ interface{}) {
 }
 
 func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error {
-	podList, err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).List(metav1.ListOptions{
+	podList, err := client.CoreV1().Pods(b.Namespace).List(metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s", labelKeyJobId, buildId),
 	})
 	if err != nil {
@@ -84,7 +85,7 @@ func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error
 	}
 
 	for _, v := range podList.Items {
-		err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).Delete(v.Name, nil)
+		err := client.CoreV1().Pods(b.Namespace).Delete(v.Name, nil)
 		if err != nil {
 			return xerrors.Errorf(": %v", err)
 		}
@@ -95,11 +96,11 @@ func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error
 
 func (b *BazelBuild) buildRepository(client *kubernetes.Clientset, buildId string) error {
 	buildPod := b.buildPod(buildId)
-	_, err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).Create(buildPod)
+	_, err := client.CoreV1().Pods(b.Namespace).Create(buildPod)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
-	watchCh, err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).Watch(metav1.ListOptions{
+	watchCh, err := client.CoreV1().Pods(b.Namespace).Watch(metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("metadata.name=%s", buildPod.Name),
 	})
 	if err != nil {
@@ -130,7 +131,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", b.Rule.Name, buildId),
-			Namespace: os.Getenv("POD_NAMESPACE"),
+			Namespace: b.Namespace,
 			Labels: map[string]string{
 				labelKeyJobId: buildId,
 			},

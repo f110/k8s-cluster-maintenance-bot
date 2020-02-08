@@ -2,6 +2,7 @@ package config
 
 import (
 	"io/ioutil"
+	"os"
 
 	"golang.org/x/xerrors"
 	"sigs.k8s.io/yaml"
@@ -9,6 +10,7 @@ import (
 
 type Config struct {
 	WebhookListener string `json:"webhook_listener"`
+	BuildNamespace  string `json:"build_namespace"`
 }
 
 func ReadConfig(p string) (*Config, error) {
@@ -20,6 +22,12 @@ func ReadConfig(p string) (*Config, error) {
 	conf := &Config{}
 	if err := yaml.Unmarshal(b, conf); err != nil {
 		return nil, xerrors.Errorf(": %v", err)
+	}
+	if conf.BuildNamespace == "" {
+		conf.BuildNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if conf.BuildNamespace == "" {
+		return nil, xerrors.New("config: build namespace is mandatory")
 	}
 
 	return conf, nil
