@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"math/rand"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"golang.org/x/xerrors"
@@ -25,6 +26,8 @@ const (
 	artifactHost           = "storage-hl.svc.default.svc.cluster.local:9000"
 	artifactBucket         = "build-artifacts"
 	storageTokenSecretName = "storage-token"
+
+	labelKeyJobId = "k8s-cluster-maintenance-bot.f110.dev/job-id"
 )
 
 const dockerPushScript = `until docker ps
@@ -76,6 +79,29 @@ func (b *BazelBuild) Build(_ interface{}) {
 		errorLog(err)
 		return
 	}
+
+	if err := b.cleanup(client, buildId); err != nil {
+		errorLog(err)
+		return
+	}
+}
+
+func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error {
+	podList, err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).List(metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", labelKeyJobId, buildId),
+	})
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+
+	for _, v := range podList.Items {
+		err := client.CoreV1().Pods(os.Getenv("POD_NAMESPACE")).Delete(v.Name, nil)
+		if err != nil {
+			return xerrors.Errorf(": %v", err)
+		}
+	}
+
+	return nil
 }
 
 func (b *BazelBuild) shipArtifact(client *kubernetes.Clientset, buildId string) error {
@@ -267,6 +293,9 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", b.Rule.Name, buildId),
 			Namespace: os.Getenv("POD_NAMESPACE"),
+			Labels: map[string]string{
+				labelKeyJobId: buildId,
+			},
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: builderServiceAccount,
@@ -294,7 +323,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 					Args:       []string{"--output_user_root=/out", "run", b.Rule.Target},
 					WorkingDir: "/work",
 					Env: []corev1.EnvVar{
-						{Name: "DOCKER_COONFIG", Value: "/home/bazel/.docker"},
+						{Name: "DOCKER_CONFIG", Value: "/home/bazel/.docker"},
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workdir", MountPath: "/work"},
@@ -380,6 +409,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 func newBuildId() string {
 	buf := make([]byte, 8)
 
+	rand.Seed(time.Now().UnixNano())
 	for i := range buf {
 		buf[i] = letters[rand.Intn(len(letters))]
 	}
