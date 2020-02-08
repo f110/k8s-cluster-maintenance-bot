@@ -1,0 +1,4 @@
+rules:
+  - repo: f110/discord-bot.git
+    target: //:push
+    artifacts: ["bazel-bin/push.digest"]
