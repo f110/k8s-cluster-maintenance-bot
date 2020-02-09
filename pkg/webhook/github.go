@@ -67,7 +67,7 @@ func NewWebhookListener(addr string) *WebhookListener {
 	l := &WebhookListener{}
 
 	m := http.NewServeMux()
-	m.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+	m.HandleFunc("/github", func(w http.ResponseWriter, req *http.Request) {
 		wType := github.WebHookType(req)
 		buf, err := ioutil.ReadAll(req.Body)
 		if err != nil {
