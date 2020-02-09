@@ -39,7 +39,7 @@ func producer(args []string) error {
 	webhookListener := webhook.NewWebhookListener(conf.WebhookListener)
 
 	for _, r := range buildRule.Rules {
-		builder, err := consumer.NewBuildConsumer(conf.BuildNamespace, r, conf.GitHubAppId, conf.GitHubInstallationId, conf.GitHubAppPrivateKeyFile, debug)
+		builder, err := consumer.NewBuildConsumer(conf.BuildNamespace, r, conf, debug)
 		if err != nil {
 			return xerrors.Errorf(": %v", err)
 		}

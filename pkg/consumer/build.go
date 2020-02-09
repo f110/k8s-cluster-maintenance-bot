@@ -40,17 +40,12 @@ import (
 )
 
 const (
-	builderServiceAccount  = "build"
-	buildSidecarImage      = "registry.f110.dev/k8s-cluster-maintenance-bot/sidecar"
-	bazelImage             = "l.gcr.io/google/bazel:2.0.0"
-	artifactHost           = "storage-hl-svc.default.svc.cluster.local:9000"
-	artifactBucket         = "build-artifacts"
-	storageTokenSecretName = "storage-token"
+	builderServiceAccount = "build"
+	buildSidecarImage     = "registry.f110.dev/k8s-cluster-maintenance-bot/sidecar"
+	bazelImage            = "l.gcr.io/google/bazel"
+	defaultBazelVersion   = "2.0.0"
 
 	labelKeyJobId = "k8s-cluster-maintenance-bot.f110.dev/job-id"
-
-	authorName  = "bot"
-	authorEmail = "fmhrit+bot@gmail.com"
 )
 
 var (
@@ -60,10 +55,16 @@ var (
 var letters = "abcdefghijklmnopqrstuvwxyz1234567890"
 
 type BazelBuild struct {
-	Namespace      string
-	Rule           *config.Rule
-	AppId          int64
-	InstallationId int64
+	Namespace              string
+	Rule                   *config.Rule
+	AppId                  int64
+	InstallationId         int64
+	StorageHost            string
+	StorageTokenSecretName string
+	ArtifactBucket         string
+	HostAliases            []config.HostAlias
+	AuthorName             string
+	AuthorEmail            string
 
 	transport  *ghinstallation.Transport
 	url        string
@@ -75,7 +76,7 @@ func errorLog(err error) {
 	fmt.Fprintf(os.Stderr, "%+v\n", err)
 }
 
-func NewBuildConsumer(namespace string, rule *config.Rule, appId, installationId int64, privateKeyFile string, debug bool) (*BazelBuild, error) {
+func NewBuildConsumer(namespace string, rule *config.Rule, conf *config.Config, debug bool) (*BazelBuild, error) {
 	var u string
 	if rule.Private {
 		u = fmt.Sprintf("git@github.com:%s.git", rule.Repo)
@@ -83,12 +84,26 @@ func NewBuildConsumer(namespace string, rule *config.Rule, appId, installationId
 		u = fmt.Sprintf("https://github.com/%s.git", rule.Repo)
 	}
 
-	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, privateKeyFile)
+	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, conf.GitHubAppId, conf.GitHubInstallationId, conf.GitHubAppPrivateKeyFile)
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}
 
-	return &BazelBuild{Namespace: namespace, Rule: rule, AppId: appId, InstallationId: installationId, debug: debug, url: u, transport: t}, nil
+	return &BazelBuild{
+		Namespace:              namespace,
+		Rule:                   rule,
+		AppId:                  conf.GitHubAppId,
+		InstallationId:         conf.GitHubInstallationId,
+		StorageHost:            conf.StorageHost,
+		StorageTokenSecretName: conf.StorageTokenSecretName,
+		ArtifactBucket:         conf.ArtifactBucket,
+		HostAliases:            conf.HostAliases,
+		AuthorName:             conf.CommitAuthor,
+		AuthorEmail:            conf.CommitEmail,
+		debug:                  debug,
+		url:                    u,
+		transport:              t,
+	}, nil
 }
 
 func (b *BazelBuild) Build(_ interface{}) {
@@ -197,7 +212,7 @@ func (b *BazelBuild) postProcess(buildId string) error {
 	}
 
 	s := strings.SplitN(b.Rule.PostProcess.Repo, "/", 2)
-	r, err := newGitRepo(b.transport, s[0], s[1], b.Rule.PostProcess.Image)
+	r, err := newGitRepo(b.transport, s[0], s[1], b.Rule.PostProcess.Image, b.AuthorName, b.AuthorEmail)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
@@ -213,7 +228,7 @@ func (b *BazelBuild) postProcess(buildId string) error {
 
 func (b *BazelBuild) downloadArtifact(buildName, buildId string) (string, error) {
 	cfg := &aws.Config{
-		Endpoint:         aws.String(artifactHost),
+		Endpoint:         aws.String(b.StorageHost),
 		Region:           aws.String("us-east-1"),
 		DisableSSL:       aws.Bool(true),
 		S3ForcePathStyle: aws.Bool(true),
@@ -229,7 +244,7 @@ func (b *BazelBuild) downloadArtifact(buildName, buildId string) (string, error)
 	defer os.Remove(tmpFile.Name())
 
 	_, err = s3Client.Download(tmpFile, &s3.GetObjectInput{
-		Bucket: aws.String(artifactBucket),
+		Bucket: aws.String(b.ArtifactBucket),
 		Key:    aws.String(fmt.Sprintf("%s-%s.tar", buildName, buildId)),
 	})
 	if err != nil {
@@ -264,6 +279,15 @@ func (b *BazelBuild) downloadArtifact(buildName, buildId string) (string, error)
 }
 
 func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
+	mainImage := fmt.Sprintf("%s:%s", bazelImage, defaultBazelVersion)
+	if b.Rule.BazelVersion != "" {
+		mainImage = fmt.Sprintf("%s:%s", bazelImage, b.Rule.BazelVersion)
+	}
+	hostAliases := make([]corev1.HostAlias, 0)
+	for _, v := range b.HostAliases {
+		hostAliases = append(hostAliases, corev1.HostAlias{Hostnames: v.Hostnames, IP: v.IP})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", b.Rule.Name, buildId),
@@ -285,16 +309,11 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 					},
 				},
 			},
-			HostAliases: []corev1.HostAlias{
-				{
-					Hostnames: []string{"registry.f110.dev", "registry.storage.x.f110.dev"},
-					IP:        "192.168.100.132",
-				},
-			},
+			HostAliases: hostAliases,
 			Containers: []corev1.Container{
 				{
 					Name:       "main",
-					Image:      bazelImage,
+					Image:      mainImage,
 					Args:       []string{"--output_user_root=/out", "run", b.Rule.Target},
 					WorkingDir: "/work",
 					Env: []corev1.EnvVar{
@@ -315,8 +334,8 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 					Image: buildSidecarImage,
 					Args: []string{
 						"--action=wait",
-						fmt.Sprintf("--artifact-host=%s", artifactHost),
-						fmt.Sprintf("--artifact-bucket=%s", artifactBucket),
+						fmt.Sprintf("--artifact-host=%s", b.StorageHost),
+						fmt.Sprintf("--artifact-bucket=%s", b.ArtifactBucket),
 						fmt.Sprintf("--artifact-path=%s", b.Rule.Artifacts[0]),
 					},
 					WorkingDir: "/work",
@@ -334,7 +353,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 						{Name: "AWS_ACCESS_KEY_ID", ValueFrom: &corev1.EnvVarSource{
 							SecretKeyRef: &corev1.SecretKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
-									Name: storageTokenSecretName,
+									Name: b.StorageTokenSecretName,
 								},
 								Key: "accesskey",
 							},
@@ -342,7 +361,7 @@ func (b *BazelBuild) buildPod(buildId string) *corev1.Pod {
 						{Name: "AWS_SECRET_ACCESS_KEY", ValueFrom: &corev1.EnvVarSource{
 							SecretKeyRef: &corev1.SecretKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
-									Name: storageTokenSecretName,
+									Name: b.StorageTokenSecretName,
 								},
 								Key: "secretkey",
 							},
@@ -394,16 +413,18 @@ func newBuildId() string {
 }
 
 type gitRepo struct {
-	dir      string
-	owner    string
-	repoName string
-	image    string
+	dir         string
+	owner       string
+	repoName    string
+	image       string
+	authorName  string
+	authorEmail string
 
 	repo      *git.Repository
 	transport *ghinstallation.Transport
 }
 
-func newGitRepo(transport *ghinstallation.Transport, owner, repo, image string) (*gitRepo, error) {
+func newGitRepo(transport *ghinstallation.Transport, owner, repo, image, authorName, authorEmail string) (*gitRepo, error) {
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
@@ -425,7 +446,16 @@ func newGitRepo(transport *ghinstallation.Transport, owner, repo, image string) 
 	}
 
 	log.Printf("New git repo: %s/%s in %s with image name: %s", owner, repo, dir, image)
-	return &gitRepo{dir: dir, owner: owner, repoName: repo, image: image, repo: r, transport: transport}, nil
+	return &gitRepo{
+		dir:         dir,
+		owner:       owner,
+		repoName:    repo,
+		image:       image,
+		authorName:  authorName,
+		authorEmail: authorEmail,
+		repo:        r,
+		transport:   transport,
+	}, nil
 }
 
 func (g *gitRepo) switchBranch() (string, *git.Worktree, error) {
@@ -465,8 +495,8 @@ func (g *gitRepo) commit(tree *git.Worktree, path string) error {
 	}
 	_, err = tree.Commit(fmt.Sprintf("Update %s", path), &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  authorName,
-			Email: authorEmail,
+			Name:  g.authorName,
+			Email: g.authorEmail,
 			When:  time.Now(),
 		},
 	})
