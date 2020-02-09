@@ -4,6 +4,7 @@ go 1.13
 
 require (
 	github.com/aws/aws-sdk-go v1.28.8
+	github.com/bradleyfalzon/ghinstallation v1.1.1
 	github.com/google/go-github/v29 v29.0.2
 	github.com/sergi/go-diff v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5

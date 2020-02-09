@@ -70,8 +70,8 @@ def go_library_dependencies():
     go_repository(
         name = "com_github_google_go_cmp",
         importpath = "github.com/google/go-cmp",
-        sum = "h1:crn/baboCvb5fXaQ0IJ1SGTsTVrWpDsCWC8EGETZijY=",
-        version = "v0.3.0",
+        sum = "h1:Xye71clBPdm5HgqGwUkwhbynsUJZhDbS20FvLhQ2izg=",
+        version = "v0.3.1",
     )
     go_repository(
         name = "com_github_google_go_github_v29",
@@ -711,4 +711,10 @@ def go_library_dependencies():
         importpath = "golang.org/x/time",
         sum = "h1:SvFZT6jyqRaOeXpc5h/JSfZenJ2O330aBsf7JfSUXmQ=",
         version = "v0.0.0-20190308202827-9d24e82272b4",
+    )
+    go_repository(
+        name = "com_github_bradleyfalzon_ghinstallation",
+        importpath = "github.com/bradleyfalzon/ghinstallation",
+        sum = "h1:pmBXkxgM1WeF8QYvDLT5kuQiHMcmf+X015GI0KM/E3I=",
+        version = "v1.1.1",
     )

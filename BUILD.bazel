@@ -30,7 +30,6 @@ container_push(
     registry = "registry.f110.dev",
     repository = "k8s-cluster-maintenance-bot/bot",
     tag = "{BUILD_TIMESTAMP}",
-    stamp = True,
 )
 
 pkg_tar(

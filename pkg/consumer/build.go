@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +21,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/bradleyfalzon/ghinstallation"
 	"github.com/google/go-github/v29/github"
-	"golang.org/x/oauth2"
 	"golang.org/x/xerrors"
 	"gopkg.in/src-d/go-git.v4"
 	gitConfig "gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
-	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
+	gogitHttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 	goyaml "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,10 +60,12 @@ var (
 var letters = "abcdefghijklmnopqrstuvwxyz1234567890"
 
 type BazelBuild struct {
-	Namespace   string
-	Rule        *config.Rule
-	GithubToken string
+	Namespace      string
+	Rule           *config.Rule
+	AppId          int64
+	InstallationId int64
 
+	transport  *ghinstallation.Transport
 	url        string
 	workingDir string
 	debug      bool
@@ -72,7 +75,7 @@ func errorLog(err error) {
 	fmt.Fprintf(os.Stderr, "%+v\n", err)
 }
 
-func NewBuildConsumer(namespace string, rule *config.Rule, githubToken string, debug bool) *BazelBuild {
+func NewBuildConsumer(namespace string, rule *config.Rule, appId, installationId int64, privateKeyFile string, debug bool) (*BazelBuild, error) {
 	var u string
 	if rule.Private {
 		u = fmt.Sprintf("git@github.com:%s.git", rule.Repo)
@@ -80,7 +83,12 @@ func NewBuildConsumer(namespace string, rule *config.Rule, githubToken string, d
 		u = fmt.Sprintf("https://github.com/%s.git", rule.Repo)
 	}
 
-	return &BazelBuild{Namespace: namespace, Rule: rule, GithubToken: githubToken, debug: debug, url: u}
+	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, privateKeyFile)
+	if err != nil {
+		return nil, xerrors.Errorf(": %v", err)
+	}
+
+	return &BazelBuild{Namespace: namespace, Rule: rule, AppId: appId, InstallationId: installationId, debug: debug, url: u, transport: t}, nil
 }
 
 func (b *BazelBuild) Build(_ interface{}) {
@@ -189,7 +197,7 @@ func (b *BazelBuild) postProcess(buildId string) error {
 	}
 
 	s := strings.SplitN(b.Rule.PostProcess.Repo, "/", 2)
-	r, err := newGitRepo(b.GithubToken, s[0], s[1], b.Rule.PostProcess.Image)
+	r, err := newGitRepo(b.transport, s[0], s[1], b.Rule.PostProcess.Image)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
@@ -386,37 +394,38 @@ func newBuildId() string {
 }
 
 type gitRepo struct {
-	token    string
 	dir      string
 	owner    string
 	repoName string
 	image    string
 
-	repo *git.Repository
+	repo      *git.Repository
+	transport *ghinstallation.Transport
 }
 
-func newGitRepo(token string, owner, repo, image string) (*gitRepo, error) {
+func newGitRepo(transport *ghinstallation.Transport, owner, repo, image string) (*gitRepo, error) {
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}
 
+	t, err := transport.Token(context.Background())
+	if err != nil {
+		return nil, xerrors.Errorf(": %v", err)
+	}
 	u := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 	log.Printf("git clone %s", u)
 	r, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:   u,
 		Depth: 1,
-		Auth: &http.BasicAuth{
-			Username: "octocat",
-			Password: token,
-		},
+		Auth:  &gogitHttp.BasicAuth{Username: "octocast", Password: t},
 	})
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}
 
 	log.Printf("New git repo: %s/%s in %s with image name: %s", owner, repo, dir, image)
-	return &gitRepo{token: token, dir: dir, owner: owner, repoName: repo, image: image, repo: r}, nil
+	return &gitRepo{dir: dir, owner: owner, repoName: repo, image: image, repo: r, transport: transport}, nil
 }
 
 func (g *gitRepo) switchBranch() (string, *git.Worktree, error) {
@@ -469,25 +478,21 @@ func (g *gitRepo) commit(tree *git.Worktree, path string) error {
 }
 
 func (g *gitRepo) push(branchName string) error {
+	token, err := g.transport.Token(context.Background())
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
 	refSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", branchName, branchName)
+	log.Printf("git push origin %s with %s", refSpec, token)
 	return g.repo.Push(&git.PushOptions{
-		Auth: &http.BasicAuth{
-			Username: "octocat",
-			Password: g.token,
-		},
+		Auth:       &gogitHttp.BasicAuth{Username: "octocat", Password: token},
 		RemoteName: "origin",
 		RefSpecs:   []gitConfig.RefSpec{gitConfig.RefSpec(refSpec)},
 	})
 }
 
 func (g *gitRepo) createPullRequest(name, branch string, editedFiles []string) error {
-	ctx := context.Background()
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: g.token},
-	)
-	tc := oauth2.NewClient(ctx, ts)
-
-	client := github.NewClient(tc)
+	client := github.NewClient(&http.Client{Transport: g.transport})
 
 	desc := "Change file(s):\n"
 	for _, v := range editedFiles {

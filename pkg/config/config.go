@@ -9,9 +9,12 @@ import (
 )
 
 type Config struct {
-	WebhookListener string `json:"webhook_listener"`
-	BuildNamespace  string `json:"build_namespace"`
-	GitHubTokenFile string `json:"github_token_file"`
+	WebhookListener         string `json:"webhook_listener"`
+	BuildNamespace          string `json:"build_namespace"`
+	GitHubTokenFile         string `json:"github_token_file"`
+	GitHubAppId             int64  `json:"app_id"`
+	GitHubInstallationId    int64  `json:"installation_id"`
+	GitHubAppPrivateKeyFile string `json:"app_private_key_file"`
 
 	GitHubToken string `json:"-"`
 }
