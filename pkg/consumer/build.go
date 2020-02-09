@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,7 +30,6 @@ import (
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	gogitHttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
-	goyaml "gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -538,6 +538,48 @@ func (g *gitRepo) createPullRequest(name, branch string, editedFiles []string) e
 	return err
 }
 
+func (g *gitRepo) modifyKustomization(paths []string, newImageHash string) ([]string, error) {
+	editFiles := make([]string, 0)
+	for _, in := range paths {
+		absPath := filepath.Join(g.dir, in)
+		log.Printf("Read: %s", absPath)
+		b, err := ioutil.ReadFile(absPath)
+		if err != nil {
+			return nil, xerrors.Errorf(": %v", err)
+		}
+		if len(b) == 0 {
+			return nil, errors.New("file is empty")
+		}
+
+		lines := strings.Split(string(b), "\n")
+		changed := false
+		for i, v := range lines {
+			if strings.Index(v, "digest") == -1 {
+				continue
+			}
+
+			if strings.Index(v, "# bot:") > 0 {
+				re := regexp.MustCompile(`digest:\s+(sha256:[a-zA-Z0-9]+)\s# bot:` + g.image)
+				m := re.FindStringSubmatch(v)
+				if len(m) == 0 {
+					continue
+				}
+				changed = true
+				lines[i] = strings.Replace(v, m[1], newImageHash, 1)
+			}
+		}
+
+		if changed {
+			editFiles = append(editFiles, in)
+			if err := ioutil.WriteFile(absPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+				return nil, xerrors.Errorf(": %v", err)
+			}
+		}
+	}
+
+	return editFiles, nil
+}
+
 func (g *gitRepo) UpdateKustomization(name, artifactPath string, paths []string) error {
 	buf, err := ioutil.ReadFile(artifactPath)
 	if err != nil {
@@ -553,58 +595,17 @@ func (g *gitRepo) UpdateKustomization(name, artifactPath string, paths []string)
 		return err
 	}
 
-	editFiles := make([]string, 0)
-	for _, in := range paths {
-		absPath := filepath.Join(g.dir, in)
-		log.Printf("Read: %s", absPath)
-		b, err := ioutil.ReadFile(absPath)
-		if err != nil {
-			return err
-		}
-		if len(b) == 0 {
-			return errors.New("file is empty")
-		}
-
-		k := make(map[string]interface{})
-		if err := goyaml.Unmarshal(b, k); err != nil {
-			return err
-		}
-		log.Printf("File body: %v", k)
-
-		changed := false
-		if v, ok := k["images"]; ok {
-			value := v.([]interface{})
-			for _, i := range value {
-				image := i.(map[interface{}]interface{})
-				if n, ok := image["name"]; ok {
-					name := n.(string)
-					log.Printf("Found image: %s", name)
-					if name == g.image {
-						image["digest"] = newImageHash
-						editFiles = append(editFiles, in)
-						changed = true
-					}
-				}
-			}
-		}
-
-		if changed {
-			outBuf, err := goyaml.Marshal(k)
-			if err != nil {
-				return err
-			}
-			log.Printf("Write: %s", absPath)
-			if err := ioutil.WriteFile(absPath, outBuf, 0644); err != nil {
-				return err
-			}
-
-			if err := g.commit(tree, in); err != nil {
-				return err
-			}
+	editedFiles, err := g.modifyKustomization(paths, newImageHash)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+	for _, v := range editedFiles {
+		if err := g.commit(tree, v); err != nil {
+			return xerrors.Errorf(": %v", err)
 		}
 	}
 
-	if len(editFiles) == 0 {
+	if len(editedFiles) == 0 {
 		log.Print("Skip creating a pull request because not have any change")
 		return nil
 	}
@@ -613,7 +614,7 @@ func (g *gitRepo) UpdateKustomization(name, artifactPath string, paths []string)
 		return err
 	}
 
-	if err := g.createPullRequest(name, branchName, editFiles); err != nil {
+	if err := g.createPullRequest(name, branchName, editedFiles); err != nil {
 		return err
 	}
 
