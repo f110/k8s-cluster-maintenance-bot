@@ -62,8 +62,6 @@ type BuildRule struct {
 }
 
 type Rule struct {
-	Name         string       `json:"name"`
-	Repo         string       `json:"repo"`
 	Private      bool         `json:"private"`
 	BazelVersion string       `json:"bazel_version"`
 	Target       string       `json:"target"`
@@ -85,6 +83,15 @@ func ReadBuildRule(p string) (*BuildRule, error) {
 
 	conf := &BuildRule{}
 	if err := yaml.Unmarshal(b, conf); err != nil {
+		return nil, xerrors.Errorf(": %v", err)
+	}
+
+	return conf, nil
+}
+
+func ParseBuildRule(v string) (*Rule, error) {
+	conf := &Rule{}
+	if err := yaml.Unmarshal([]byte(v), conf); err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}
 
