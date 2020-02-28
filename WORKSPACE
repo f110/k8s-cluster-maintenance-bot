@@ -40,10 +40,6 @@ go_register_toolchains()
 
 gazelle_dependencies()
 
-#load("//:deps.bzl", "go_library_dependencies")
-#
-#go_library_dependencies()
-
 load("@io_bazel_rules_docker//repositories:repositories.bzl", container_repositories = "repositories")
 load("@io_bazel_rules_docker//repositories:go_repositories.bzl", rules_docker_dependencies = "go_deps")
 load("@io_bazel_rules_docker//container:container.bzl", "container_pull")

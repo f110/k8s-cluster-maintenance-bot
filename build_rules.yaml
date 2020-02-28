@@ -1,9 +1,0 @@
-rules:
-  - repo: f110/discord-bot
-    target: //:push
-    artifacts: ["bazel-bin/push.digest"]
-    post_process:
-      repo: f110/ops
-      image: registry.f110.dev/discord-bot/bot
-      paths:
-        - bot

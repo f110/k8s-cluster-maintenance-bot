@@ -22,6 +22,7 @@ type Config struct {
 	HostAliases             []HostAlias `json:"host_aliases"`
 	CommitAuthor            string      `json:"commit_author"`
 	CommitEmail             string      `json:"commit_email"`
+	AllowRepositories       []string    `json:"allow_repositories"`
 
 	GitHubToken string `json:"-"`
 }

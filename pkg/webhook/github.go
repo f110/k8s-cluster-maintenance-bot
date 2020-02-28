@@ -4,6 +4,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/google/go-github/v29/github"
 )
@@ -22,12 +23,19 @@ type subscriber struct {
 type ConsumeFunc func(event interface{})
 
 type eventHandler struct {
-	subscribers map[string][]*subscriber
+	allowRepositories map[string]struct{}
+	subscribers       map[string][]*subscriber
 }
 
-func newEventHandler() *eventHandler {
+func newEventHandler(allowRepositories []string) *eventHandler {
+	allow := make(map[string]struct{})
+	for _, v := range allowRepositories {
+		allow[v] = struct{}{}
+	}
+
 	return &eventHandler{
-		subscribers: make(map[string][]*subscriber),
+		allowRepositories: allow,
+		subscribers:       make(map[string][]*subscriber),
 	}
 }
 
@@ -54,6 +62,10 @@ func (e *eventHandler) Handle(msg interface{}) {
 		if !ok {
 			return
 		}
+		if !e.checkWhiteListed(event.GetRepo().GetFullName()) {
+			log.Printf("%s is not allowed", event.GetRepo().GetFullName())
+			return
+		}
 
 		log.Printf("Push Event: %s", event.GetRepo().GetFullName())
 		for _, s := range subscribers {
@@ -65,6 +77,10 @@ func (e *eventHandler) Handle(msg interface{}) {
 		if !ok {
 			return
 		}
+		if !e.checkWhiteListed(event.GetRepo().GetFullName()) {
+			log.Printf("%s is not allowed", event.GetRepo().GetFullName())
+			return
+		}
 
 		log.Printf("PullRequest: %s", event.GetRepo().GetFullName())
 		for _, s := range subscribers {
@@ -74,13 +90,21 @@ func (e *eventHandler) Handle(msg interface{}) {
 	}
 }
 
-type WebhookListener struct {
+func (e *eventHandler) checkWhiteListed(fullName string) bool {
+	if _, ok := e.allowRepositories[fullName]; ok {
+		return ok
+	}
+
+	return false
+}
+
+type Listener struct {
 	*http.Server
 	*eventHandler
 }
 
-func NewWebhookListener(addr string) *WebhookListener {
-	l := &WebhookListener{}
+func NewListener(addr string) *Listener {
+	l := &Listener{}
 
 	m := http.NewServeMux()
 	m.HandleFunc("/github", func(w http.ResponseWriter, req *http.Request) {

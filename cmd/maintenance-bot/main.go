@@ -30,7 +30,7 @@ func producer(args []string) error {
 		return xerrors.Errorf(": %v", err)
 	}
 
-	webhookListener := webhook.NewWebhookListener(conf.WebhookListener)
+	webhookListener := webhook.NewListener(conf.WebhookListener)
 
 	builder, err := consumer.NewBuildConsumer(conf.BuildNamespace, conf, debug)
 	if err != nil {
