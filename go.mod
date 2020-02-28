@@ -7,6 +7,7 @@ require (
 	github.com/bradleyfalzon/ghinstallation v1.1.1
 	github.com/google/go-github/v29 v29.0.2
 	github.com/sergi/go-diff v1.1.0 // indirect
+	github.com/sourcegraph/go-diff v0.5.1
 	github.com/spf13/pflag v1.0.5
 	golang.org/x/crypto v0.0.0-20200117160349-530e935923ad // indirect
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa // indirect
@@ -19,3 +20,5 @@ require (
 	k8s.io/client-go v0.17.0
 	sigs.k8s.io/yaml v1.1.0
 )
+
+replace github.com/googleapis/gnostic => github.com/googleapis/gnostic v0.1.0

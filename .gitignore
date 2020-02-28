@@ -1,1 +1,3 @@
 /bazel-*
+/github-token
+/privatekey.pem

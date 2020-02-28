@@ -2,7 +2,10 @@ update:
 	bazel run //:gazelle
 
 update-deps:
-	bazel run //:gazelle -- update-repos -from_file=go.mod -to_macro=deps.bzl%go_library_dependencies
+	bazel run //:gazelle -- update-repos -from_file=go.mod -to_macro=deps.bzl%go_library_dependencies -build_file_proto_mode=disable_global
+
+run:
+	bazel run //cmd/maintenance-bot -- -c $(CURDIR)/config_debug.yaml
 
 push:
 	bazel build --platforms=@io_bazel_rules_go//go/toolchain:linux_amd64 //:image.tar

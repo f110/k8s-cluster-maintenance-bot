@@ -6,7 +6,8 @@ go_library(
     importpath = "github.com/f110/k8s-cluster-maintenance-bot/pkg/config",
     visibility = ["//visibility:public"],
     deps = [
-        "@io_k8s_sigs_yaml//:go_default_library",
-        "@org_golang_x_xerrors//:go_default_library",
+        "//vendor/golang.org/x/xerrors:go_default_library",
+        "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/sigs.k8s.io/yaml:go_default_library",
     ],
 )

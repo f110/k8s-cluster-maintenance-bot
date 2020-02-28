@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"golang.org/x/xerrors"
 	"gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -36,13 +37,23 @@ const (
 	ContainerImage = "quay.io/f110/k8s-cluster-maintenance-bot-build-sidecar"
 )
 
-func actionClone(repo, dir string) error {
-	_, err := git.PlainClone(dir, false, &git.CloneOptions{
+func actionClone(dir, repo, commit string) error {
+	r, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:   repo,
 		Depth: 1,
 	})
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
+	}
+
+	if commit != "" {
+		tree, err := r.Worktree()
+		if err != nil {
+			return xerrors.Errorf(": %v", err)
+		}
+		if err := tree.Checkout(&git.CheckoutOptions{Hash: plumbing.NewHash(commit)}); err != nil {
+			return xerrors.Errorf(": %v", err)
+		}
 	}
 
 	return nil
@@ -219,6 +230,7 @@ func actionDownloadArtifacts(artifactHost, artifactBucket, artifactPath string) 
 func buildSidecar(args []string) error {
 	action := ""
 	repo := ""
+	commit := ""
 	workingDir := ""
 	artifactHost := ""
 	artifactBucket := ""
@@ -227,6 +239,7 @@ func buildSidecar(args []string) error {
 	fs.StringVarP(&action, "action", "a", action, "Action")
 	fs.StringVarP(&workingDir, "work-dir", "w", workingDir, "Working directory")
 	fs.StringVar(&repo, "url", repo, "Repository url (e.g. git@github.com:octocat/example.git)")
+	fs.StringVarP(&commit, "commit", "b", "", "Specify commit")
 	fs.StringVar(&artifactHost, "artifact-host", artifactHost, "Artifact storage endpoint")
 	fs.StringVar(&artifactBucket, "artifact-bucket", artifactBucket, "Artifact storage bucket name")
 	fs.StringVar(&artifactPath, "artifact-path", artifactPath, "File path for storing")
@@ -236,7 +249,7 @@ func buildSidecar(args []string) error {
 
 	switch action {
 	case ActionClone:
-		return actionClone(repo, workingDir)
+		return actionClone(workingDir, repo, commit)
 	case ActionWait:
 		return actionWait(artifactHost, artifactBucket, artifactPath)
 	case ActionDownloadArtifacts:

@@ -9,8 +9,8 @@ go_library(
         "//pkg/config:go_default_library",
         "//pkg/consumer:go_default_library",
         "//pkg/webhook:go_default_library",
-        "@com_github_spf13_pflag//:go_default_library",
-        "@org_golang_x_xerrors//:go_default_library",
+        "//vendor/github.com/spf13/pflag:go_default_library",
+        "//vendor/golang.org/x/xerrors:go_default_library",
     ],
 )
 

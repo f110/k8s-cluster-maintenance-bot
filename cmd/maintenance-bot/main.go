@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/spf13/pflag"
 	"golang.org/x/xerrors"
@@ -31,24 +30,20 @@ func producer(args []string) error {
 		return xerrors.Errorf(": %v", err)
 	}
 
-	buildRule, err := config.ReadBuildRule(buildRuleFile)
+	webhookListener := webhook.NewWebhookListener(conf.WebhookListener)
+
+	builder, err := consumer.NewBuildConsumer(conf.BuildNamespace, conf, debug)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
+	webhookListener.SubscribePushEvent(builder.Build)
 
-	webhookListener := webhook.NewWebhookListener(conf.WebhookListener)
-
-	for _, r := range buildRule.Rules {
-		builder, err := consumer.NewBuildConsumer(conf.BuildNamespace, r, conf, debug)
-		if err != nil {
-			return xerrors.Errorf(": %v", err)
-		}
-		s := strings.SplitN(r.Repo, "/", 2)
-		if strings.HasSuffix(s[1], ".git") {
-			s[1] = strings.TrimSuffix(s[1], ".git")
-		}
-		webhookListener.SubscribePushEvent(s[0], s[1], builder.Build)
+	dnsControlBuilder, err := consumer.NewDNSControlConsumer(conf.BuildNamespace, conf, debug)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
 	}
+	webhookListener.SubscribePushEvent(dnsControlBuilder.Dispatch)
+	webhookListener.SubscribePullRequest(dnsControlBuilder.Dispatch)
 
 	if err := webhookListener.ListenAndServe(); err != nil {
 		if err == http.ErrServerClosed {

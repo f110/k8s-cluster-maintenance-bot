@@ -4,13 +4,13 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/google/go-github/v29/github"
 )
 
 const (
-	EventTypePush = "push"
+	EventTypePush        = "push"
+	EventTypePullRequest = "pull_request"
 )
 
 type subscriber struct {
@@ -31,12 +31,20 @@ func newEventHandler() *eventHandler {
 	}
 }
 
-func (e *eventHandler) SubscribePushEvent(owner, repo string, consume ConsumeFunc) {
+func (e *eventHandler) SubscribePushEvent(consume ConsumeFunc) {
 	if _, ok := e.subscribers[EventTypePush]; !ok {
 		e.subscribers[EventTypePush] = make([]*subscriber, 0)
 	}
 
-	e.subscribers[EventTypePush] = append(e.subscribers[EventTypePush], &subscriber{Owner: owner, Repo: repo, ConsumeFunc: consume})
+	e.subscribers[EventTypePush] = append(e.subscribers[EventTypePush], &subscriber{ConsumeFunc: consume})
+}
+
+func (e *eventHandler) SubscribePullRequest(consume ConsumeFunc) {
+	if _, ok := e.subscribers[EventTypePullRequest]; !ok {
+		e.subscribers[EventTypePullRequest] = make([]*subscriber, 0)
+	}
+
+	e.subscribers[EventTypePullRequest] = append(e.subscribers[EventTypePullRequest], &subscriber{ConsumeFunc: consume})
 }
 
 func (e *eventHandler) Handle(msg interface{}) {
@@ -47,13 +55,21 @@ func (e *eventHandler) Handle(msg interface{}) {
 			return
 		}
 
-		repoName := strings.SplitN(event.Repo.GetFullName(), "/", 2)
-		log.Printf("Push Event: %s/%s", repoName[0], repoName[1])
+		log.Printf("Push Event: %s", event.GetRepo().GetFullName())
 		for _, s := range subscribers {
-			if repoName[0] == s.Owner && repoName[1] == s.Repo {
-				log.Printf("Trigger subscriber: %s/%s", s.Owner, s.Repo)
-				go s.ConsumeFunc(event)
-			}
+			log.Print("Trigger subscriber")
+			go s.ConsumeFunc(event)
+		}
+	case *github.PullRequestEvent:
+		subscribers, ok := e.subscribers[EventTypePullRequest]
+		if !ok {
+			return
+		}
+
+		log.Printf("PullRequest: %s", event.GetRepo().GetFullName())
+		for _, s := range subscribers {
+			log.Print("Trigger subscriber")
+			go s.ConsumeFunc(event)
 		}
 	}
 }
@@ -84,6 +100,7 @@ func NewWebhookListener(addr string) *WebhookListener {
 			return
 		}
 
+		log.Printf("Get event: %s %v", wType, messageBody)
 		l.Handle(messageBody)
 	})
 

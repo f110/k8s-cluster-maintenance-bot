@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"golang.org/x/xerrors"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -58,14 +59,12 @@ func ReadConfig(p string) (*Config, error) {
 }
 
 type BuildRule struct {
-	Rules []*Rule `json:"rules"`
-}
-
-type Rule struct {
+	Branch       string       `json:"branch"`
 	Private      bool         `json:"private"`
 	BazelVersion string       `json:"bazel_version"`
 	Target       string       `json:"target"`
 	Artifacts    []string     `json:"artifacts"`
+	Env          []Env        `json:"env"`
 	PostProcess  *PostProcess `json:"post_process"`
 }
 
@@ -75,22 +74,60 @@ type PostProcess struct {
 	Paths []string `json:"paths"`
 }
 
-func ReadBuildRule(p string) (*BuildRule, error) {
-	b, err := ioutil.ReadFile(p)
-	if err != nil {
-		return nil, xerrors.Errorf(": %v", err)
-	}
+type Env struct {
+	Name   string        `json:"name"`
+	Value  string        `json:"value,omitempty"`
+	Secret *SecretSource `json:"secret,omitempty"`
+}
 
+type SecretSource struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+func ParseBuildRule(v string) (*BuildRule, error) {
 	conf := &BuildRule{}
-	if err := yaml.Unmarshal(b, conf); err != nil {
+	if err := yaml.Unmarshal([]byte(v), conf); err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}
 
 	return conf, nil
 }
 
-func ParseBuildRule(v string) (*Rule, error) {
-	conf := &Rule{}
+func (e Env) ToEnvVar() corev1.EnvVar {
+	v := corev1.EnvVar{
+		Name:  e.Name,
+		Value: e.Value,
+	}
+	if e.Secret != nil {
+		v.ValueFrom = &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: e.Secret.Name,
+				},
+				Key: e.Secret.Key,
+			},
+		}
+	}
+
+	return v
+}
+
+type DNSControlRule struct {
+	MasterBranch string          `json:"master_branch"`
+	Image        string          `json:"image"`
+	Dir          string          `json:"dir"`
+	Secret       *SecretSelector `json:"secret"`
+}
+
+type SecretSelector struct {
+	EnvName string `json:"env_name"`
+	Name    string `json:"name"`
+	Key     string `json:"key"`
+}
+
+func ParseDNSControlRule(v string) (*DNSControlRule, error) {
+	conf := &DNSControlRule{}
 	if err := yaml.Unmarshal([]byte(v), conf); err != nil {
 		return nil, xerrors.Errorf(": %v", err)
 	}

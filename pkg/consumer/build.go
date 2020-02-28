@@ -32,7 +32,6 @@ import (
 	gogitHttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -67,16 +66,8 @@ type BazelBuild struct {
 	AuthorEmail            string
 
 	transport  *ghinstallation.Transport
-	url        string
 	workingDir string
 	debug      bool
-}
-
-type buildContext struct {
-	Owner  string
-	Repo   string
-	Commit string
-	Rule   *config.Rule
 }
 
 func errorLog(err error) {
@@ -84,8 +75,6 @@ func errorLog(err error) {
 }
 
 func NewBuildConsumer(namespace string, conf *config.Config, debug bool) (*BazelBuild, error) {
-	var u string
-
 	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, conf.GitHubAppId, conf.GitHubInstallationId, conf.GitHubAppPrivateKeyFile)
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
@@ -102,7 +91,6 @@ func NewBuildConsumer(namespace string, conf *config.Config, debug bool) (*Bazel
 		AuthorName:             conf.CommitAuthor,
 		AuthorEmail:            conf.CommitEmail,
 		debug:                  debug,
-		url:                    u,
 		transport:              t,
 	}, nil
 }
@@ -113,15 +101,24 @@ func (b *BazelBuild) Build(e interface{}) {
 		log.Print("Not push event")
 		return
 	}
-	s := strings.SplitN(event.Repo.GetFullName(), "/", 2)
-	buildCtx := &buildContext{
-		Owner:  s[0],
-		Repo:   s[1],
-		Commit: event.GetAfter(),
+	buildCtx := NewEventContextFromPushEvent(event)
+
+	if contents, err := buildCtx.FetchRuleFile(b.transport, repositoryBuildConfigFilePath); err != nil {
+		errorLog(err)
+		return
+	} else {
+		rule, err := config.ParseBuildRule(contents)
+		if err != nil {
+			errorLog(err)
+			return
+		}
+		buildCtx.Rule = rule
 	}
 
-	if err := b.fetchRuleFile(buildCtx); err != nil {
-		errorLog(err)
+	s := strings.SplitN(event.GetRef(), "/", 3)
+	branch := s[2]
+	if buildCtx.Rule.Branch != "" && buildCtx.Rule.Branch != branch {
+		log.Printf("Skip build because %s is not target branch", branch)
 		return
 	}
 
@@ -158,31 +155,6 @@ func (b *BazelBuild) Build(e interface{}) {
 	}
 }
 
-func (b *BazelBuild) fetchRuleFile(buildCtx *buildContext) error {
-	client := github.NewClient(&http.Client{Transport: b.transport})
-	t, _, err := client.Git.GetTree(context.Background(), buildCtx.Owner, buildCtx.Repo, buildCtx.Commit, true)
-	if err != nil {
-		return xerrors.Errorf(": %v", err)
-	}
-
-	fileContents := ""
-	for _, v := range t.Entries {
-		if v.GetPath() != repositoryBuildConfigFilePath {
-			continue
-		}
-		fileContents = v.GetContent()
-		break
-	}
-
-	conf, err := config.ParseBuildRule(fileContents)
-	if err != nil {
-		return xerrors.Errorf(": %v", err)
-	}
-	buildCtx.Rule = conf
-
-	return nil
-}
-
 func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error {
 	if b.debug {
 		return nil
@@ -205,47 +177,25 @@ func (b *BazelBuild) cleanup(client *kubernetes.Clientset, buildId string) error
 	return nil
 }
 
-func (b *BazelBuild) buildRepository(buildCtx *buildContext, client *kubernetes.Clientset, buildId string) error {
+func (b *BazelBuild) buildRepository(buildCtx *eventContext, client *kubernetes.Clientset, buildId string) error {
 	buildPod := b.buildPod(buildCtx, buildId)
 	_, err := client.CoreV1().Pods(b.Namespace).Create(buildPod)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
-	watchCh, err := client.CoreV1().Pods(b.Namespace).Watch(metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", buildPod.Name),
-	})
+	success, err := WaitForFinish(client, b.Namespace, buildPod.Name)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}
-	defer watchCh.Stop()
 
-	failed := false
-Watch:
-	for e := range watchCh.ResultChan() {
-		switch e.Type {
-		case watch.Modified:
-			pod, ok := e.Object.(*corev1.Pod)
-			if !ok {
-				continue
-			}
-			switch pod.Status.Phase {
-			case corev1.PodSucceeded:
-				break Watch
-			case corev1.PodFailed:
-				failed = true
-				break Watch
-			}
-		}
-	}
-
-	if failed {
+	if !success {
 		return errBuildFailure
 	}
 
 	return nil
 }
 
-func (b *BazelBuild) postProcess(buildCtx *buildContext, buildId string) error {
+func (b *BazelBuild) postProcess(buildCtx *eventContext, buildId string) error {
 	artifactDir, err := b.downloadArtifact(buildCtx, buildId)
 	if artifactDir != "" {
 		defer os.RemoveAll(artifactDir)
@@ -269,7 +219,7 @@ func (b *BazelBuild) postProcess(buildCtx *buildContext, buildId string) error {
 	return nil
 }
 
-func (b *BazelBuild) downloadArtifact(buildCtx *buildContext, buildId string) (string, error) {
+func (b *BazelBuild) downloadArtifact(buildCtx *eventContext, buildId string) (string, error) {
 	cfg := &aws.Config{
 		Endpoint:         aws.String(b.StorageHost),
 		Region:           aws.String("us-east-1"),
@@ -321,7 +271,7 @@ func (b *BazelBuild) downloadArtifact(buildCtx *buildContext, buildId string) (s
 	return dir, nil
 }
 
-func (b *BazelBuild) buildPod(buildCtx *buildContext, buildId string) *corev1.Pod {
+func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Pod {
 	mainImage := fmt.Sprintf("%s:%s", bazelImage, defaultBazelVersion)
 	if buildCtx.Rule.BazelVersion != "" {
 		mainImage = fmt.Sprintf("%s:%s", bazelImage, buildCtx.Rule.BazelVersion)
@@ -329,6 +279,11 @@ func (b *BazelBuild) buildPod(buildCtx *buildContext, buildId string) *corev1.Po
 	hostAliases := make([]corev1.HostAlias, 0)
 	for _, v := range b.HostAliases {
 		hostAliases = append(hostAliases, corev1.HostAlias{Hostnames: v.Hostnames, IP: v.IP})
+	}
+
+	env := make([]corev1.EnvVar, 0)
+	for _, v := range buildCtx.Rule.Env {
+		env = append(env, v.ToEnvVar())
 	}
 
 	return &corev1.Pod{
@@ -346,7 +301,7 @@ func (b *BazelBuild) buildPod(buildCtx *buildContext, buildId string) *corev1.Po
 				{
 					Name:  "pre-process",
 					Image: buildSidecarImage,
-					Args:  []string{"--action=clone", "--work-dir=/work", fmt.Sprintf("--url=%s", b.url)},
+					Args:  []string{"--action=clone", "--work-dir=/work", fmt.Sprintf("--url=%s", buildCtx.CloneURL())},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workdir", MountPath: "/work"},
 					},
@@ -359,9 +314,7 @@ func (b *BazelBuild) buildPod(buildCtx *buildContext, buildId string) *corev1.Po
 					Image:      mainImage,
 					Args:       []string{"--output_user_root=/out", "run", buildCtx.Rule.Target},
 					WorkingDir: "/work",
-					Env: []corev1.EnvVar{
-						{Name: "DOCKER_CONFIG", Value: "/home/bazel/.docker"},
-					},
+					Env:        append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/home/bazel/.docker"}),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workdir", MountPath: "/work"},
 						{Name: "outdir", MountPath: "/out"},
@@ -564,7 +517,7 @@ func (g *gitRepo) push(branchName string) error {
 	})
 }
 
-func (g *gitRepo) createPullRequest(buildCtx *buildContext, branch string, editedFiles []string) error {
+func (g *gitRepo) createPullRequest(buildCtx *eventContext, branch string, editedFiles []string) error {
 	client := github.NewClient(&http.Client{Transport: g.transport})
 
 	desc := "Change file(s):\n"
@@ -623,7 +576,7 @@ func (g *gitRepo) modifyKustomization(paths []string, newImageHash string) ([]st
 	return editFiles, nil
 }
 
-func (g *gitRepo) UpdateKustomization(buildCtx *buildContext, artifactPath string, paths []string) error {
+func (g *gitRepo) UpdateKustomization(buildCtx *eventContext, artifactPath string, paths []string) error {
 	buf, err := ioutil.ReadFile(artifactPath)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
