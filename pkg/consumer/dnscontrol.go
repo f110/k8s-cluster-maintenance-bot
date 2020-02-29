@@ -308,7 +308,8 @@ func (c *DNSControlConsumer) runPod(ctx *dnsControlContext, buildId, command str
 			Name:      fmt.Sprintf("%s-%s-%s", ctx.Owner, ctx.Repo, buildId),
 			Namespace: c.Namespace,
 			Labels: map[string]string{
-				labelKeyJobId: buildId,
+				labelKeyJobId:  buildId,
+				labelKeyCtrlBy: "dnscontrol",
 			},
 		},
 		Spec: corev1.PodSpec{

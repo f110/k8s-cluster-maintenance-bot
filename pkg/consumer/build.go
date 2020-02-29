@@ -45,7 +45,8 @@ const (
 	defaultBazelVersion           = "2.0.0"
 	repositoryBuildConfigFilePath = ".bot/build"
 
-	labelKeyJobId = "k8s-cluster-maintenance-bot.f110.dev/job-id"
+	labelKeyJobId  = "k8s-cluster-maintenance-bot.f110.dev/job-id"
+	labelKeyCtrlBy = "k8s-cluster-maintenance-bot.f110.dev/control-by"
 )
 
 var (
@@ -291,7 +292,8 @@ func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Po
 			Name:      fmt.Sprintf("%s-%s-%s", buildCtx.Owner, buildCtx.Repo, buildId),
 			Namespace: b.Namespace,
 			Labels: map[string]string{
-				labelKeyJobId: buildId,
+				labelKeyJobId:  buildId,
+				labelKeyCtrlBy: "bazel-build",
 			},
 		},
 		Spec: corev1.PodSpec{
