@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -54,8 +55,9 @@ func NewEventContextFromPullRequest(event *github.PullRequestEvent) *eventContex
 	return ctx
 }
 
-func (c *eventContext) FetchRuleFile(transport http.RoundTripper, path string) (string, error) {
-	client := github.NewClient(&http.Client{Transport: transport})
+func (c *eventContext) FetchRuleFile(hClient *http.Client, path string) (string, error) {
+	log.Printf("Fetch rule file via api: %s/%s %s %s", c.Owner, c.Repo, c.Commit, path)
+	client := github.NewClient(hClient)
 	t, _, err := client.Git.GetTree(context.Background(), c.Owner, c.Repo, c.Commit, true)
 	if err != nil {
 		return "", xerrors.Errorf(": %v", err)

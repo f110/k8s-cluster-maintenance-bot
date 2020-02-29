@@ -30,11 +30,14 @@ const (
 var prMergedMessageRe = regexp.MustCompile(`^Merge pull request #(\d+) from`)
 
 type DNSControlConsumer struct {
-	Namespace   string
-	HostAliases []config.HostAlias
+	Namespace            string
+	HostAliases          []config.HostAlias
+	AppId                int64
+	InstallationId       int64
+	PrivateKeySecretName string
 
-	transport *ghinstallation.Transport
-	debug     bool
+	client *http.Client
+	debug  bool
 }
 
 func NewDNSControlConsumer(namespace string, conf *config.Config, debug bool) (*DNSControlConsumer, error) {
@@ -44,10 +47,13 @@ func NewDNSControlConsumer(namespace string, conf *config.Config, debug bool) (*
 	}
 
 	return &DNSControlConsumer{
-		Namespace:   namespace,
-		HostAliases: conf.HostAliases,
-		transport:   t,
-		debug:       debug,
+		Namespace:            namespace,
+		HostAliases:          conf.HostAliases,
+		AppId:                conf.GitHubAppId,
+		InstallationId:       conf.GitHubInstallationId,
+		PrivateKeySecretName: conf.PrivateKeySecretName,
+		client:               &http.Client{Transport: t},
+		debug:                debug,
 	}, nil
 }
 
@@ -95,21 +101,16 @@ func (c *DNSControlConsumer) dispatchPushEvent(event *github.PushEvent, client *
 		return
 	}
 
-	ghClient := github.NewClient(&http.Client{Transport: c.transport})
-	b, err := c.getCommitsDiff(ctx, ghClient, event.GetBefore(), event.GetAfter())
+	ghClient := github.NewClient(c.client)
+	compare, _, err := ghClient.Repositories.CompareCommits(context.Background(), ctx.Owner, ctx.Repo, event.GetBefore(), event.GetAfter())
 	if err != nil {
 		errorLog(err)
 		return
 	}
-	changed, err := changedFilesFromDiff(b)
-	if err != nil {
-		errorLog(err)
-		return
-	}
-
 	ok := false
-	for _, v := range changed {
-		if strings.HasPrefix(v, ctx.Rule.Dir) {
+	for _, v := range compare.Files {
+		log.Print(v.GetFilename())
+		if strings.HasPrefix("/"+v.GetFilename(), ctx.Rule.Dir) {
 			ok = true
 			break
 		}
@@ -146,7 +147,7 @@ func (c *DNSControlConsumer) dispatchPullRequestEvent(event *github.PullRequestE
 		return
 	}
 
-	ghClient := github.NewClient(&http.Client{Transport: c.transport})
+	ghClient := github.NewClient(c.client)
 	res, _, err := ghClient.PullRequests.GetRaw(context.Background(), ctx.Owner, ctx.Repo, ctx.PullRequestNumber, github.RawOptions{Type: github.Diff})
 	if err != nil {
 		errorLog(err)
@@ -229,7 +230,7 @@ func (c *DNSControlConsumer) runPreview(ctx *dnsControlContext, client *kubernet
 }
 
 func (c *DNSControlConsumer) fetchRuleFile(ctx *dnsControlContext) error {
-	if contents, err := ctx.FetchRuleFile(c.transport, dnscontrolBuildRule); err != nil {
+	if contents, err := ctx.FetchRuleFile(c.client, dnscontrolBuildRule); err != nil {
 		return xerrors.Errorf(": %v", err)
 	} else {
 		rule, err := config.ParseDNSControlRule(contents)
@@ -248,23 +249,30 @@ func (c *DNSControlConsumer) getCommitsDiff(ctx *dnsControlContext, ghClient *gi
 	if err != nil {
 		return "", xerrors.Errorf(": %v", err)
 	}
+	log.Printf("Get diff from %s", compare.GetDiffURL())
 	req, err := ghClient.NewRequest(http.MethodGet, compare.GetDiffURL(), nil)
 	if err != nil {
 		return "", xerrors.Errorf(": %v", err)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.client.Do(req)
 	if err != nil {
 		return "", xerrors.Errorf(": %v", err)
 	}
+	log.Printf("Status: %d", res.StatusCode)
 	b, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		return "", xerrors.Errorf(": %v", err)
 	}
+	defer res.Body.Close()
 
 	return string(b), nil
 }
 
 func (c *DNSControlConsumer) cleanup(client *kubernetes.Clientset, buildId string) error {
+	if c.debug {
+		return nil
+	}
+
 	podList, err := client.CoreV1().Pods(c.Namespace).List(metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s", labelKeyJobId, buildId),
 	})
@@ -313,19 +321,25 @@ func (c *DNSControlConsumer) runPod(ctx *dnsControlContext, buildId, command str
 						"--work-dir=/work",
 						fmt.Sprintf("--url=%s", ctx.CloneURL()),
 						fmt.Sprintf("--commit=%s", ctx.Commit),
+						fmt.Sprintf("--github-app-id=%d", c.AppId),
+						fmt.Sprintf("--github-installation-id=%d", c.InstallationId),
+						"--private-key-file=/etc/sidecar/privatekey.pem",
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workdir", MountPath: "/work"},
+						{Name: "private-key", MountPath: "/etc/sidecar"},
 					},
 				},
 			},
 			HostAliases: hostAliases,
 			Containers: []corev1.Container{
 				{
-					Name:       "dnscontrol",
-					Image:      mainImage,
-					Args:       []string{command},
-					WorkingDir: filepath.Join("/work", ctx.Rule.Dir),
+					Name:            "dnscontrol",
+					Image:           mainImage,
+					ImagePullPolicy: corev1.PullAlways,
+					Command:         []string{"/usr/local/bin/dnscontrol"},
+					Args:            []string{command},
+					WorkingDir:      filepath.Join("/work", ctx.Rule.Dir),
 					Env: []corev1.EnvVar{
 						{Name: ctx.Rule.Secret.EnvName, ValueFrom: &corev1.EnvVarSource{
 							SecretKeyRef: &corev1.SecretKeySelector{
@@ -344,6 +358,14 @@ func (c *DNSControlConsumer) runPod(ctx *dnsControlContext, buildId, command str
 					Name: "workdir",
 					VolumeSource: corev1.VolumeSource{
 						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+				{
+					Name: "private-key",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: c.PrivateKeySecretName,
+						},
 					},
 				},
 			},

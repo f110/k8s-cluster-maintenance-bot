@@ -16,6 +16,7 @@ type Config struct {
 	GitHubAppId             int64       `json:"app_id"`
 	GitHubInstallationId    int64       `json:"installation_id"`
 	GitHubAppPrivateKeyFile string      `json:"app_private_key_file"`
+	PrivateKeySecretName    string      `json:"private_key_secret_name"`
 	StorageHost             string      `json:"storage_host"`
 	StorageTokenSecretName  string      `json:"storage_token_secret_name"`
 	ArtifactBucket          string      `json:"artifact_bucket"`

@@ -42,7 +42,7 @@ const (
 	buildSidecarImage             = "registry.f110.dev/k8s-cluster-maintenance-bot/sidecar"
 	bazelImage                    = "l.gcr.io/google/bazel"
 	defaultBazelVersion           = "2.0.0"
-	repositoryBuildConfigFilePath = ".bot/build"
+	repositoryBuildConfigFilePath = ".bot/build.yaml"
 
 	labelKeyJobId  = "k8s-cluster-maintenance-bot.f110.dev/job-id"
 	labelKeyCtrlBy = "k8s-cluster-maintenance-bot.f110.dev/control-by"
@@ -103,7 +103,7 @@ func (b *BazelBuild) Build(e interface{}) {
 	}
 	buildCtx := NewEventContextFromPushEvent(event)
 
-	if contents, err := buildCtx.FetchRuleFile(b.transport, repositoryBuildConfigFilePath); err != nil {
+	if contents, err := buildCtx.FetchRuleFile(&http.Client{Transport: b.transport}, repositoryBuildConfigFilePath); err != nil {
 		errorLog(err)
 		return
 	} else {
