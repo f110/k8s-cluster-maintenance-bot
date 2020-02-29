@@ -4,4 +4,7 @@ update:
 run:
 	bazel run //cmd/maintenance-bot -- -c $(CURDIR)/config_debug.yaml
 
-.PHONY: update run
+push:
+	bazel query 'kind(container_push, //...)' | xargs -n1 bazel run
+
+.PHONY: update run push

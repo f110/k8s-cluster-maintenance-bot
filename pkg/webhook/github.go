@@ -4,9 +4,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/google/go-github/v29/github"
+
+	"github.com/f110/k8s-cluster-maintenance-bot/pkg/config"
 )
 
 const (
@@ -103,7 +104,7 @@ type Listener struct {
 	*eventHandler
 }
 
-func NewListener(addr string) *Listener {
+func NewListener(conf *config.Config) *Listener {
 	l := &Listener{}
 
 	m := http.NewServeMux()
@@ -129,11 +130,11 @@ func NewListener(addr string) *Listener {
 	})
 
 	s := &http.Server{
-		Addr:    addr,
+		Addr:    conf.WebhookListener,
 		Handler: m,
 	}
 	l.Server = s
-	l.eventHandler = newEventHandler()
+	l.eventHandler = newEventHandler(conf.AllowRepositories)
 
 	return l
 }
