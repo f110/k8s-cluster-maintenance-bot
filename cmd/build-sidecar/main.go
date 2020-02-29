@@ -3,10 +3,12 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,10 +18,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/bradleyfalzon/ghinstallation"
 	"github.com/spf13/pflag"
 	"golang.org/x/xerrors"
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	gogitHttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -37,10 +41,25 @@ const (
 	ContainerImage = "quay.io/f110/k8s-cluster-maintenance-bot-build-sidecar"
 )
 
-func actionClone(dir, repo, commit string) error {
+func actionClone(appId, installationId int64, privateKeyFile, dir, repo, commit string) error {
+	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, appId, installationId, privateKeyFile)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+	token, err := t.Token(context.Background())
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+
+	depth := 1
+	if commit != "" {
+		depth = 0
+	}
+
 	r, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:   repo,
-		Depth: 1,
+		Depth: depth,
+		Auth:  &gogitHttp.BasicAuth{Username: "octocast", Password: token},
 	})
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
@@ -230,6 +249,9 @@ func actionDownloadArtifacts(artifactHost, artifactBucket, artifactPath string) 
 func buildSidecar(args []string) error {
 	action := ""
 	repo := ""
+	appId := int64(0)
+	installationId := int64(0)
+	privateKeyFile := ""
 	commit := ""
 	workingDir := ""
 	artifactHost := ""
@@ -238,6 +260,9 @@ func buildSidecar(args []string) error {
 	fs := pflag.NewFlagSet("build-sidecar", pflag.ContinueOnError)
 	fs.StringVarP(&action, "action", "a", action, "Action")
 	fs.StringVarP(&workingDir, "work-dir", "w", workingDir, "Working directory")
+	fs.Int64Var(&appId, "github-app-id", appId, "GitHub App Id")
+	fs.Int64Var(&installationId, "github-installation-id", installationId, "GitHub Installation Id")
+	fs.StringVar(&privateKeyFile, "private-key-file", privateKeyFile, "GitHub app private key file")
 	fs.StringVar(&repo, "url", repo, "Repository url (e.g. git@github.com:octocat/example.git)")
 	fs.StringVarP(&commit, "commit", "b", "", "Specify commit")
 	fs.StringVar(&artifactHost, "artifact-host", artifactHost, "Artifact storage endpoint")
@@ -249,7 +274,7 @@ func buildSidecar(args []string) error {
 
 	switch action {
 	case ActionClone:
-		return actionClone(workingDir, repo, commit)
+		return actionClone(appId, installationId, privateKeyFile, workingDir, repo, commit)
 	case ActionWait:
 		return actionWait(artifactHost, artifactBucket, artifactPath)
 	case ActionDownloadArtifacts:
