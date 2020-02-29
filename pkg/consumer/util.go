@@ -8,6 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func WaitForFinish(client *kubernetes.Clientset, namespace, name string) (bool, error) {
@@ -39,4 +41,22 @@ Watch:
 	}
 
 	return failed, nil
+}
+
+func NewKubernetesClient() (*kubernetes.Clientset, error) {
+	conf, err := rest.InClusterConfig()
+	if err != nil {
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		clientConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{}).ClientConfig()
+		if err != nil {
+			return nil, err
+		}
+		conf = clientConfig
+	}
+	client, err := kubernetes.NewForConfig(conf)
+	if err != nil {
+		return nil, err
+	}
+
+	return client, nil
 }

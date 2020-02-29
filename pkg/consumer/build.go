@@ -33,7 +33,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"github.com/f110/k8s-cluster-maintenance-bot/pkg/config"
 )
@@ -123,12 +122,7 @@ func (b *BazelBuild) Build(e interface{}) {
 		return
 	}
 
-	conf, err := rest.InClusterConfig()
-	if err != nil {
-		errorLog(err)
-		return
-	}
-	client, err := kubernetes.NewForConfig(conf)
+	client, err := NewKubernetesClient()
 	if err != nil {
 		errorLog(err)
 		return

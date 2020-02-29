@@ -18,8 +18,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/f110/k8s-cluster-maintenance-bot/pkg/config"
 )
@@ -54,16 +52,7 @@ func NewDNSControlConsumer(namespace string, conf *config.Config, debug bool) (*
 }
 
 func (c *DNSControlConsumer) Dispatch(e interface{}) {
-	conf, err := rest.InClusterConfig()
-	if err != nil {
-		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-		clientConfig, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{}).ClientConfig()
-		if err != nil {
-			errorLog(err)
-		}
-		conf = clientConfig
-	}
-	client, err := kubernetes.NewForConfig(conf)
+	client, err := NewKubernetesClient()
 	if err != nil {
 		errorLog(err)
 		return
