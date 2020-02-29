@@ -38,7 +38,7 @@ func producer(args []string) error {
 	}
 	webhookListener.SubscribePushEvent(builder.Build)
 
-	dnsControlBuilder, err := consumer.NewDNSControlConsumer(conf.BuildNamespace, conf, debug)
+	dnsControlBuilder, err := consumer.NewDNSControlConsumer(conf.BuildNamespace, conf, conf.SafeMode, debug)
 	if err != nil {
 		return xerrors.Errorf(": %v", err)
 	}

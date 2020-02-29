@@ -36,11 +36,12 @@ type DNSControlConsumer struct {
 	InstallationId       int64
 	PrivateKeySecretName string
 
-	client *http.Client
-	debug  bool
+	client   *http.Client
+	safeMode bool
+	debug    bool
 }
 
-func NewDNSControlConsumer(namespace string, conf *config.Config, debug bool) (*DNSControlConsumer, error) {
+func NewDNSControlConsumer(namespace string, conf *config.Config, safeMode, debug bool) (*DNSControlConsumer, error) {
 	t, err := ghinstallation.NewKeyFromFile(http.DefaultTransport, conf.GitHubAppId, conf.GitHubInstallationId, conf.GitHubAppPrivateKeyFile)
 	if err != nil {
 		return nil, xerrors.Errorf(": %v", err)
@@ -53,6 +54,7 @@ func NewDNSControlConsumer(namespace string, conf *config.Config, debug bool) (*
 		InstallationId:       conf.GitHubInstallationId,
 		PrivateKeySecretName: conf.PrivateKeySecretName,
 		client:               &http.Client{Transport: t},
+		safeMode:             safeMode,
 		debug:                debug,
 	}, nil
 }
@@ -120,6 +122,11 @@ func (c *DNSControlConsumer) dispatchPushEvent(event *github.PushEvent, client *
 		return
 	}
 
+	if c.safeMode {
+		log.Print("Finish dispatchPushEvent. because safe mode is on.")
+		return
+	}
+
 	result, err := c.runExecute(ctx, client)
 	if err != nil {
 		errorLog(err)
@@ -161,6 +168,35 @@ func (c *DNSControlConsumer) dispatchPullRequestEvent(event *github.PullRequestE
 	}
 	ctx.Changed = changed
 
+	ok := false
+	for _, v := range ctx.Changed {
+		if strings.HasPrefix(v, ctx.Rule.Dir) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		errorLog(xerrors.New("nothing change"))
+		return
+	}
+
+	if err := c.setStatus(ghClient, ctx, "preview", "pending", "Run dry-run"); err != nil {
+		errorLog(err)
+		return
+	}
+	success := false
+	defer func() {
+		status := "failure"
+		if success {
+			status = "success"
+		}
+
+		if err := c.setStatus(ghClient, ctx, "preview", status, "Run dry-run"); err != nil {
+			errorLog(err)
+			return
+		}
+	}()
+
 	result, err := c.runPreview(ctx, client)
 	if err != nil {
 		errorLog(err)
@@ -173,6 +209,7 @@ func (c *DNSControlConsumer) dispatchPullRequestEvent(event *github.PullRequestE
 		errorLog(err)
 		return
 	}
+	success = true
 }
 
 func (c *DNSControlConsumer) runExecute(ctx *dnsControlContext, client *kubernetes.Clientset) (string, error) {
@@ -227,6 +264,25 @@ func (c *DNSControlConsumer) runPreview(ctx *dnsControlContext, client *kubernet
 	}
 
 	return string(body), nil
+}
+
+func (c *DNSControlConsumer) setStatus(ghClient *github.Client, ctx *dnsControlContext, contextName, status, description string) error {
+	_, _, err := ghClient.Repositories.CreateStatus(
+		context.Background(),
+		ctx.Owner,
+		ctx.Repo,
+		ctx.Commit,
+		&github.RepoStatus{
+			Context:     github.String(contextName),
+			State:       github.String(status),
+			Description: github.String(description),
+		},
+	)
+	if err != nil {
+		return xerrors.Errorf(": %v", err)
+	}
+
+	return nil
 }
 
 func (c *DNSControlConsumer) fetchRuleFile(ctx *dnsControlContext) error {

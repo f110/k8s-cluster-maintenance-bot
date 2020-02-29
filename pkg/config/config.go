@@ -24,6 +24,7 @@ type Config struct {
 	CommitAuthor            string      `json:"commit_author"`
 	CommitEmail             string      `json:"commit_email"`
 	AllowRepositories       []string    `json:"allow_repositories"`
+	SafeMode                bool        `json:"safe_mode"`
 
 	GitHubToken string `json:"-"`
 }
