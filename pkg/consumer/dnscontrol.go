@@ -127,6 +127,23 @@ func (c *DNSControlConsumer) dispatchPushEvent(event *github.PushEvent, client *
 		return
 	}
 
+	if err := c.setStatus(ghClient, ctx, "execute", "pending", "Applying"); err != nil {
+		errorLog(err)
+		return
+	}
+	success := false
+	defer func() {
+		status := "failure"
+		if success {
+			status = "success"
+		}
+
+		if err := c.setStatus(ghClient, ctx, "execute", status, "Applying"); err != nil {
+			errorLog(err)
+			return
+		}
+	}()
+
 	result, err := c.runExecute(ctx, client)
 	if err != nil {
 		errorLog(err)
@@ -139,6 +156,8 @@ func (c *DNSControlConsumer) dispatchPushEvent(event *github.PushEvent, client *
 		errorLog(err)
 		return
 	}
+
+	success = true
 }
 
 func (c *DNSControlConsumer) dispatchPullRequestEvent(event *github.PullRequestEvent, client *kubernetes.Clientset) {
