@@ -281,6 +281,40 @@ func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Po
 		env = append(env, v.ToEnvVar())
 	}
 
+	volumes := []corev1.Volume{
+		{
+			Name: "workdir",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: "outdir",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "workdir", MountPath: "/work"},
+		{Name: "outdir", MountPath: "/out"},
+	}
+
+	if buildCtx.Rule.DockerConfigSecretName != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "docker-config",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "docker-config",
+				},
+			}})
+
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "docker-config",
+			MountPath: "/home/bazel/.docker/config.json",
+			SubPath:   ".dockerconfigjson"})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s-%s", buildCtx.Owner, buildCtx.Repo, buildId),
@@ -306,20 +340,12 @@ func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Po
 			HostAliases: hostAliases,
 			Containers: []corev1.Container{
 				{
-					Name:       "main",
-					Image:      mainImage,
-					Args:       []string{"--output_user_root=/out", "run", buildCtx.Rule.Target},
-					WorkingDir: "/work",
-					Env:        append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/home/bazel/.docker"}),
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "workdir", MountPath: "/work"},
-						{Name: "outdir", MountPath: "/out"},
-						{
-							Name:      "docker-config",
-							MountPath: "/home/bazel/.docker/config.json",
-							SubPath:   ".dockerconfigjson",
-						},
-					},
+					Name:         "main",
+					Image:        mainImage,
+					Args:         []string{"--output_user_root=/out", "run", buildCtx.Rule.Target},
+					WorkingDir:   "/work",
+					Env:          append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/home/bazel/.docker"}),
+					VolumeMounts: volumeMounts,
 				},
 				{
 					Name:  "post-process",
@@ -367,28 +393,7 @@ func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Po
 					},
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "workdir",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "outdir",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "docker-config",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: "docker-config",
-						},
-					},
-				},
-			},
+			Volumes: volumes,
 		},
 	}
 }

@@ -62,13 +62,14 @@ func ReadConfig(p string) (*Config, error) {
 }
 
 type BuildRule struct {
-	Branch       string       `json:"branch"`
-	Private      bool         `json:"private"`
-	BazelVersion string       `json:"bazel_version"`
-	Target       string       `json:"target"`
-	Artifacts    []string     `json:"artifacts"`
-	Env          []Env        `json:"env"`
-	PostProcess  *PostProcess `json:"post_process"`
+	Branch                 string       `json:"branch"`
+	Private                bool         `json:"private"`
+	BazelVersion           string       `json:"bazel_version"`
+	Target                 string       `json:"target"`
+	DockerConfigSecretName string       `json:"docker_config_secret_name"`
+	Artifacts              []string     `json:"artifacts"`
+	Env                    []Env        `json:"env"`
+	PostProcess            *PostProcess `json:"post_process"`
 }
 
 type PostProcess struct {
