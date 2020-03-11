@@ -305,7 +305,7 @@ func (b *BazelBuild) buildPod(buildCtx *eventContext, buildId string) *corev1.Po
 			Name: "docker-config",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: "docker-config",
+					SecretName: buildCtx.Rule.DockerConfigSecretName,
 				},
 			}})
 
